@@ -1,6 +1,6 @@
 #!/bin/sh
-#  Read-only Root-FS for Raspian using overlayfs
-#  Version 1.2
+#  Read-only Root-FS using overlayfs
+#  Version 2.0
 #
 #  Version History:
 #  1.0: initial release
@@ -9,10 +9,12 @@
 #       is not found it look for a PARTUUID string in fstab for / and convert that to a device name
 #       using the blkid command.
 #  1.2: renamed bash script
+#  2.0: adapted to use a persistent partition rather then a tmpfs
 #
 #  Created 2017 by Pascal Suter @ DALCO AG, Switzerland to work on Raspian as custom init script
 #  (raspbian does not use an initramfs on boot)
-#  Update 1.2 by InventoryTech@github 2023/03/28
+#  Update 1.2 & 2.0 by InventoryTech@github 2023
+#  
 #
 #  This program is free software: you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -29,33 +31,25 @@
 #    <http://www.gnu.org/licenses/>.
 #
 #
-#  Tested with Raspbian mini, 2018-10-09
-#
-#  This script will mount the root filesystem read-only and overlay it with a temporary tempfs 
+#  This script will mount the root filesystem read-only and overlay it with a separate ext4 partition 
 #  which is read-write mounted. This is done using the overlayFS which is part of the linux kernel 
 #  since version 3.18. 
-#  when this script is in use, all changes made to anywhere in the root filesystem mount will be lost 
-#  upon reboot of the system. The SD card will only be accessed as read-only drive, which significantly
-#  helps to prolong its life and prevent filesystem coruption in environments where the system is usually
-#  not shut down properly 
+#  when this script is in use, all changes made to anywhere in the root filesystem mount will made to a separate partition.
+#  The root filesystem will only be accessed as read-only drive, this prevents changes to the root filesystem over time and
+#  helps to prevent filesystem coruption and improves system updates. 
 #
 #  Install: 
-#  copy this script to /usr/sbin/overlay_root.sh, make it executable and add "init=/usr/sbin/overlay_root.sh" to the 
-#  cmdline.txt file in the raspbian image's boot partition. 
-#  I strongly recommend to disable swapping before using this. it will work with swap but that just does 
-#  not make sens as the swap file will be stored in the tempfs which again resides in the ram.
-#  run these commands on the booted raspberry pi BEFORE you set the init=/usr/sbin/overlay_root.sh boot option:
-#  sudo dphys-swapfile swapoff
-#  sudo dphys-swapfile uninstall
-#  sudo update-rc.d dphys-swapfile remove
-#
-#  To install software, run upgrades and do other changes to the raspberry setup, simply remove the init= 
-#  entry from the cmdline.txt file and reboot, make the changes, add the init= entry and reboot once more. 
+#  copy this script to /usr/sbin/overlay_root.sh, make it executable and add "init=/usr/sbin/overlay_root.sh" to the kernel arguments
+#  To makes chnages to the root filesystem it can be remounted as read-write like so "sudo mount -o remount,rw /dev/mmcblk0p2 /ro"
+#  once all changes have been made remount as read-only "sudo mount -o remount,ro /dev/mmcblk0p2 /ro"
  
 fail(){
 	echo -e "$1"
 	/bin/bash
 }
+
+PERSISTENT_PARTITION=/dev/mmcblk0p5
+PERSISTENT_PARTITION_TYPE=ext4
  
 # load module
 modprobe overlay
@@ -78,7 +72,7 @@ mkdir /mnt/overlay    # upper and work
 mkdir /mnt/oldroot    # lower
 mkdir /mnt/newroot    # overlayfs
 
-mount -t ext4 /dev/mmcblk0p4 /mnt/overlay
+mount -t ${PERSISTENT_PARTITION_TYPE} ${PERSISTENT_PARTITION} /mnt/overlay
 if [ $? -ne 0 ]; then
     fail "ERROR: could not mount persistent filesystem for overlay"
 fi
@@ -102,7 +96,7 @@ if [ $? -ne 0 ]; then
     fail "ERROR: could not ro-mount original root partition"
 fi
 
-mount -t overlay -o lowerdir=/mnt/oldroot,upperdir=/mnt/overlay/upper,workdir=/mnt/overlay/work,redirect_dir=on overlayfs-root /mnt/newroot
+mount -t overlay -o lowerdir=/mnt/oldroot,upperdir=/mnt/overlay/upper,workdir=/mnt/overlay/work overlayfs-root /mnt/newroot
 if [ $? -ne 0 ]; then
     fail "ERROR: could not mount overlayFS"
 fi
@@ -110,6 +104,7 @@ fi
 # create mountpoints inside the new root filesystem-overlay
 mkdir -p /mnt/newroot/ro
 mkdir -p /mnt/newroot/rw
+
 # remove root mount from fstab (this is already a non-permanent modification)
 grep -v "$rootDev" /mnt/oldroot/etc/fstab > /mnt/newroot/etc/fstab
 echo "# the original root mount has been removed by overlay_root.sh" >> /mnt/newroot/etc/fstab
